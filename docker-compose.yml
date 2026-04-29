@@ -1,0 +1,27 @@
+services:
+  pypi-query-mcp-server:
+    image: mekayelanik/pypi-query-mcp-server:latest
+    container_name: pypi-query-mcp-server
+    environment:
+      - PORT=8055
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - NODE_ENV=production
+      - PROTOCOL=SHTTP
+      - ENABLE_HTTPS=false
+      - HTTP_VERSION_MODE=auto
+      # Optional: require Bearer token auth at HAProxy layer
+      # - API_KEY=replace-with-strong-secret
+      # Optional: CORS origins (comma-separated, or * for all)
+      # - CORS=*
+    ports:
+      - "8055:8055"
+    volumes:
+      # Persistent cache for pip/npm artifacts
+      - pypi-query-mcp-cache:/home/node/.cache
+    restart: unless-stopped
+
+volumes:
+  pypi-query-mcp-cache:
+    driver: local

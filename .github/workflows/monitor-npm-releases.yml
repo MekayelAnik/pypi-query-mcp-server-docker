@@ -1,0 +1,426 @@
+name: PyPI Query MCP Server PyPI Build Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Action to perform
+        required: true
+        type: choice
+        options:
+          - auto-check
+          - build
+          - promote-latest
+          - force-promote-latest
+          - promote-stable
+          - force-promote-stable
+        default: auto-check
+      versions:
+        description: 'Versions to build. Comma-separated (1.4.5,1.5.3), range (1.0.0-1.5.3), or empty for auto from NPM.'
+        required: false
+        type: string
+        default: ''
+      force_build:
+        description: Force build even if tags may already exist
+        required: false
+        type: boolean
+        default: false
+      auto_promote:
+        description: 'Automatically promote latest tag after build completes'
+        required: false
+        type: boolean
+        default: false
+      custom_latest:
+        description: 'Override which version to promote as latest (leave empty for NPM latest)'
+        required: false
+        type: string
+        default: ''
+      build_profile:
+        description: Build profile
+        required: false
+        type: choice
+        options:
+          - production
+          - ci
+          - development
+          - size-optimized
+        default: production
+      base_image:
+        description: 'Base image override (example: node:current-alpine)'
+        required: false
+        type: string
+        default: ''
+
+  repository_dispatch:
+    types: [pypi-query-mcp-server-build]
+
+permissions:
+  contents: write
+  actions: read
+  packages: write
+
+concurrency:
+  group: pypi-query-mcp-server-pypi-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action || github.event_name == 'repository_dispatch' && (github.event.client_payload.action || 'external') || 'manual' }}
+  cancel-in-progress: false
+
+env:
+  PYPI_PACKAGE: 'pypi-query-mcp-server'
+  PYPI_REGISTRY: 'https://pypi.org'
+  MAX_VERSIONS: '10'
+  TZ: ${{ vars.TZ || 'Asia/Dhaka' }}
+  PRIMARY_REGISTRY: 'ghcr'
+  DOCKERHUB_REPO: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/pypi-query-mcp-server' }}
+  GHCR_REPO: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/pypi-query-mcp-server', github.repository_owner) }}
+  DEFAULT_PLATFORMS: ${{ vars.DEFAULT_PLATFORMS || 'linux/amd64,linux/arm64' }}
+  EXCLUDE_VERSIONS: ${{ vars.EXCLUDE_VERSIONS || '' }}
+  BASE_IMAGE_DEFAULT: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || 'python:3.14-alpine' }}
+  HAPROXY_IMAGE: ${{ vars.HAPROXY_IMAGE || 'haproxy:lts-alpine' }}
+  NODE_IMAGE: ${{ vars.NODE_IMAGE || 'node:lts-alpine' }}
+  EXPORT_CACHE_CONCURRENCY: '4'
+  EXPORT_LAYERS_CONCURRENCY: '4'
+  BUILDKIT_STEP_LOG_MAX_SIZE: '50000000'
+  BUILDKIT_STEP_LOG_MAX_SPEED: '100000000'
+  BUILDKIT_PROGRESS: 'plain'
+  DOCKER_BUILDKIT_INLINE_CACHE: '1'
+
+jobs:
+  quick-check:
+    name: Check if pipeline run is needed
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Compare PyPI latest against stored state
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          STATE_BRANCH="pipeline-state"
+          STATE_FILE="state.json"
+          REPO="${{ github.repository }}"
+
+          # Manual triggers and force_build always run
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual trigger — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For repository_dispatch with force_build
+          if [[ "${{ github.event.client_payload.force_build || '' }}" == "true" ]]; then
+            echo "Force build requested — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check current PyPI latest version
+          CURRENT_PYPI_LATEST="$(curl -fsSL "${PYPI_REGISTRY}/pypi/${PYPI_PACKAGE}/json" | jq -r '.info.version // ""' 2>/dev/null || echo "")"
+          if [[ -z "$CURRENT_PYPI_LATEST" ]]; then
+            echo "Could not fetch PyPI latest — running pipeline as fallback"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Read stored state from pipeline-state branch
+          STORED_PYPI_LATEST=""
+          STATE_JSON="$(gh api "repos/${REPO}/contents/${STATE_FILE}?ref=${STATE_BRANCH}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "")"
+          if [[ -n "$STATE_JSON" ]]; then
+            STORED_PYPI_LATEST="$(echo "$STATE_JSON" | jq -r '.pypi_latest_version // .npm_latest_version // ""' 2>/dev/null || echo "")"
+          fi
+
+          if [[ -z "$STORED_PYPI_LATEST" ]]; then
+            echo "No stored PyPI version — first run, running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$CURRENT_PYPI_LATEST" != "$STORED_PYPI_LATEST" ]]; then
+            echo "PyPI latest changed: ${STORED_PYPI_LATEST} -> ${CURRENT_PYPI_LATEST} — running pipeline"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "PyPI latest unchanged (${CURRENT_PYPI_LATEST}) — skipping pipeline"
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+
+  preflight:
+    name: Preflight checks
+    needs: [quick-check]
+    if: needs.quick-check.outputs.should_run == 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          workflow_dir = Path('.github/workflows')
+          for wf in sorted(workflow_dir.glob('*.yml')):
+              yaml.safe_load(wf.read_text(encoding='utf-8'))
+          print('workflow_yaml_ok')
+          PY
+
+      - name: Run preflight shell tests
+        uses: ./.github/actions/preflight-shell-tests
+
+  fetch-releases:
+    name: Fetch and filter PyPI releases
+    needs: [quick-check]
+    if: needs.quick-check.outputs.should_run == 'true'
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    outputs:
+      normalized_action: ${{ steps.normalize.outputs.action }}
+      normalized_versions: ${{ steps.normalize.outputs.versions }}
+      normalized_force_build: ${{ steps.normalize.outputs.force_build }}
+      normalized_auto_promote: ${{ steps.normalize.outputs.auto_promote }}
+      normalized_custom_latest: ${{ steps.normalize.outputs.custom_latest }}
+      versions_json: ${{ steps.releases.outputs.versions_json }}
+      latest_version: ${{ needs.fetch-releases.outputs.normalized_custom_latest != '' && needs.fetch-releases.outputs.normalized_custom_latest || (steps.releases.outputs.latest_version) }}
+      date_tag: ${{ steps.releases.outputs.date_tag }}
+      should_build: ${{ steps.releases.outputs.should_build }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Normalize dispatch inputs
+        id: normalize
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTION_INPUT="${{ github.event.inputs.action || '' }}" \
+          CLIENT_ACTION="${{ github.event.client_payload.action || '' }}" \
+          VERSIONS_INPUT="${{ github.event.inputs.versions || '' }}" \
+          CLIENT_VERSIONS="${{ github.event.client_payload.versions || '' }}" \
+          FORCE_INPUT="${{ github.event.inputs.force_build || '' }}" \
+          CLIENT_FORCE="${{ github.event.client_payload.force_build || '' }}" \
+          AUTO_PROMOTE_INPUT="${{ github.event.inputs.auto_promote || '' }}" \
+          CLIENT_AUTO_PROMOTE="${{ github.event.client_payload.auto_promote || '' }}" \
+          CUSTOM_LATEST_INPUT="${{ github.event.inputs.custom_latest || '' }}" \
+          CLIENT_CUSTOM_LATEST="${{ github.event.client_payload.custom_latest || '' }}" \
+          bash .github/scripts/normalize-dispatch-inputs.sh
+
+      - name: Collect stable versions
+        id: releases
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUESTED_ACTION="${{ steps.normalize.outputs.action }}" \
+          MANUAL_VERSIONS_RAW="${{ steps.normalize.outputs.versions }}" \
+          PYPI_PACKAGE="${PYPI_PACKAGE}" \
+          PYPI_REGISTRY="${PYPI_REGISTRY}" \
+          MAX_VERSIONS="${MAX_VERSIONS}" \
+          EXCLUDE_VERSIONS="${EXCLUDE_VERSIONS}" \
+          bash .github/scripts/fetch-releases-pypi.sh
+
+  build-versions:
+    name: Build selected versions
+    needs: [preflight, fetch-releases]
+    if: needs.fetch-releases.outputs.should_build == 'true' && !startsWith(needs.fetch-releases.outputs.normalized_action, 'promote') && !startsWith(needs.fetch-releases.outputs.normalized_action, 'force-promote')
+    uses: ./.github/workflows/reusable-build-versions.yml
+    with:
+      versions_json: ${{ needs.fetch-releases.outputs.versions_json }}
+      build_profile: ${{ github.event.inputs.build_profile || 'production' }}
+      force_build: ${{ needs.fetch-releases.outputs.normalized_force_build }}
+      base_image_default: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || 'python:3.14-alpine' }}
+      haproxy_image: ${{ vars.HAPROXY_IMAGE || 'haproxy:lts-alpine' }}
+      node_image: ${{ vars.NODE_IMAGE || 'node:lts-alpine' }}
+      ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/pypi-query-mcp-server', github.repository_owner) }}
+      dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/pypi-query-mcp-server' }}
+      default_platforms: ${{ vars.DEFAULT_PLATFORMS || 'linux/amd64,linux/arm64' }}
+      export_cache_concurrency: '4'
+      export_layers_concurrency: '4'
+      buildkit_step_log_max_size: '50000000'
+      buildkit_step_log_max_speed: '100000000'
+      buildkit_progress: 'plain'
+      docker_buildkit_inline_cache: '1'
+      runner_version: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  promote-latest:
+    name: Promote latest tag
+    needs: [quick-check, fetch-releases, build-versions]
+    if: |
+      always() &&
+      (needs.fetch-releases.outputs.latest_version != '' || needs.fetch-releases.outputs.normalized_action == 'force-promote-latest') &&
+      (
+        needs.fetch-releases.outputs.normalized_action == 'promote-latest' ||
+        needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' ||
+        needs.fetch-releases.outputs.normalized_action == 'promote-stable' ||
+        needs.fetch-releases.outputs.normalized_action == 'force-promote-stable' ||
+        (needs.build-versions.result == 'success' && needs.fetch-releases.outputs.normalized_auto_promote == 'true') ||
+        (needs.build-versions.result == 'success' && contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)) ||
+        needs.fetch-releases.outputs.normalized_action == 'auto-check'
+      )
+    uses: ./.github/workflows/reusable-promote-latest.yml
+    with:
+      latest_version: ${{ needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' && needs.fetch-releases.outputs.normalized_versions != '' && needs.fetch-releases.outputs.normalized_versions || needs.fetch-releases.outputs.latest_version }}
+      date_tag: ${{ needs.fetch-releases.outputs.date_tag }}
+      ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/pypi-query-mcp-server', github.repository_owner) }}
+      dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/pypi-query-mcp-server' }}
+      force_latest: ${{ needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' }}
+      force_stable: ${{ needs.fetch-releases.outputs.normalized_action == 'promote-stable' || needs.fetch-releases.outputs.normalized_action == 'force-promote-stable' }}
+      runner_version: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-24.04' }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  update-state:
+    name: Update pipeline state
+    needs: [fetch-releases, build-versions, promote-latest]
+    if: |
+      always() &&
+      needs.fetch-releases.outputs.latest_version != '' &&
+      needs.promote-latest.result == 'success' &&
+      (needs.build-versions.result == 'success' || needs.build-versions.result == 'skipped')
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout state branch
+        uses: actions/checkout@v6
+        with:
+          ref: pipeline-state
+          fetch-depth: 1
+        continue-on-error: true
+        id: checkout-state
+
+      - name: Initialize orphan branch if needed
+        if: steps.checkout-state.outcome == 'failure'
+        shell: bash
+        run: |
+          git init
+          git checkout --orphan pipeline-state
+          git reset --hard
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null || true
+
+      - name: Write and push state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LATEST="${{ needs.fetch-releases.outputs.latest_version }}"
+          if [[ -z "$LATEST" ]]; then
+            echo "No latest version to store"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Read existing state to preserve or reset latest_version_since
+          EXISTING_VERSION=""
+          EXISTING_SINCE=""
+          if [[ -f state.json ]]; then
+            EXISTING_VERSION="$(jq -r '.pypi_latest_version // .npm_latest_version // ""' state.json)"
+            EXISTING_SINCE="$(jq -r '.latest_version_since // ""' state.json)"
+          fi
+
+          # Determine latest_version_since
+          if [[ "$LATEST" != "$EXISTING_VERSION" || -z "$EXISTING_SINCE" ]]; then
+            SINCE="$NOW"
+            echo "Version changed or first run — setting latest_version_since to $SINCE"
+          else
+            SINCE="$EXISTING_SINCE"
+            echo "Version unchanged — preserving latest_version_since ($SINCE)"
+          fi
+
+          jq -n \
+            --arg v "$LATEST" \
+            --arg t "$NOW" \
+            --arg s "$SINCE" \
+            '{pypi_latest_version: $v, updated_at: $t, latest_version_since: $s}' > state.json
+
+          git add state.json
+
+          # Check if staged content differs from HEAD (handles both new and modified files)
+          if git diff --cached --quiet 2>/dev/null; then
+            echo "State unchanged — skipping commit"
+            exit 0
+          fi
+
+          git commit -m "state: update pypi_latest_version to ${LATEST}"
+          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:pipeline-state
+
+  update-readme-version:
+    name: Update README version
+    needs: [fetch-releases, promote-latest]
+    if: |
+      needs.promote-latest.result == 'success' &&
+      needs.fetch-releases.outputs.latest_version != ''
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ github.token }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update version in README
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST="${{ needs.fetch-releases.outputs.latest_version }}"
+          echo "Updating README to version $LATEST"
+
+          # Update the Available Tags table row with specific version
+          # Matches: | `X.Y.Z` | <anything> | Specific version
+          sed -i -E "s/\| \`[0-9]+\.[0-9]+\.[0-9]+\` \|(.+)\| Specific version/| \`${LATEST}\` |\1| Specific version/" README.md
+          if git diff --quiet README.md; then
+            echo "README already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update README version to ${LATEST}"
+
+          MAX_ATTEMPTS=5
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            if git push origin "HEAD:main"; then
+              echo "README pushed on attempt ${attempt}."
+              exit 0
+            fi
+            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
+              break
+            fi
+            echo "Push rejected on attempt ${attempt}; rebasing on origin/main..."
+            if ! git pull --rebase --autostash --strategy-option=theirs origin main; then
+              git rebase --abort >/dev/null 2>&1 || true
+              echo "::error::Rebase failed on attempt ${attempt}"
+              exit 1
+            fi
+            sleep "$(( (RANDOM % 4) + 2 ))"
+          done
+          echo "::error::Failed to push README after ${MAX_ATTEMPTS} attempts"
+          exit 1
+
+  update-dockerhub-description:
+    name: Update Docker Hub description
+    needs: [promote-latest, update-readme-version]
+    if: |
+      always() &&
+      needs.promote-latest.result == 'success'
+    uses: ./.github/workflows/update-dockerhub-readme.yml
+    secrets: inherit

@@ -1,0 +1,467 @@
+name: Reusable Build Versions
+
+on:
+  workflow_call:
+    inputs:
+      versions_json:
+        description: JSON matrix include payload for versions
+        required: true
+        type: string
+      build_profile:
+        description: Build profile
+        required: false
+        type: string
+        default: production
+      force_build:
+        description: Force build even if tags may already exist
+        required: false
+        type: string
+        default: 'false'
+      base_image_default:
+        description: Base image used by DockerfileModifier
+        required: true
+        type: string
+      haproxy_image:
+        description: HAProxy image for QUIC/H3 support (alpine variant required for musl base)
+        required: false
+        type: string
+        default: 'haproxy:lts-alpine'
+      node_image:
+        description: Node image used as multi-stage source for node/npm/npx (alpine variant required for musl base)
+        required: false
+        type: string
+        default: 'node:lts-alpine'
+      ghcr_repo:
+        description: GHCR repository
+        required: true
+        type: string
+      dockerhub_repo:
+        description: Docker Hub repository
+        required: true
+        type: string
+      default_platforms:
+        description: Build platforms (informational — actual platforms defined in matrix)
+        required: true
+        type: string
+      export_cache_concurrency:
+        description: Buildx export cache concurrency
+        required: false
+        type: string
+        default: '4'
+      export_layers_concurrency:
+        description: Buildx export layers concurrency
+        required: false
+        type: string
+        default: '4'
+      buildkit_step_log_max_size:
+        description: BuildKit step log max size
+        required: false
+        type: string
+        default: '50000000'
+      buildkit_step_log_max_speed:
+        description: BuildKit step log max speed
+        required: false
+        type: string
+        default: '100000000'
+      buildkit_progress:
+        description: BuildKit progress mode
+        required: false
+        type: string
+        default: plain
+      docker_buildkit_inline_cache:
+        description: BuildKit inline cache
+        required: false
+        type: string
+        default: '1'
+      runner_version:
+        description: 'GitHub Actions runner version (e.g. ubuntu-24.04). ARM derived as {version}-arm.'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: Docker Hub username
+        required: true
+      DOCKERHUB_TOKEN:
+        description: Docker Hub token
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Prepare cross-product matrix: versions × platforms ──
+  prepare-matrix:
+    name: Prepare build matrix
+    runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+      versions: ${{ steps.generate.outputs.versions }}
+      has_builds: ${{ steps.generate.outputs.has_builds }}
+    steps:
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.5
+
+      - name: Generate version × platform matrix
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSIONS_JSON='${{ inputs.versions_json }}'
+          FORCE_BUILD="${{ inputs.force_build }}"
+          GHCR_REPO="${{ inputs.ghcr_repo }}"
+          RUNNER_BASE="${{ inputs.runner_version || 'ubuntu-24.04' }}"
+          REQUESTED_PLATFORMS="${{ inputs.default_platforms }}"
+
+          # Pre-filter: skip versions already in GHCR (unless force_build)
+          # Parallel crane digest checks (~1-2s for 40+ versions vs ~9s serial)
+          if [[ "$FORCE_BUILD" != "true" ]]; then
+            FILTERED="[]"
+            TOTAL=$(echo "$VERSIONS_JSON" | jq length)
+            EXISTING_FILE=$(mktemp)
+
+            # Check all versions in parallel (up to 10 concurrent)
+            echo "$VERSIONS_JSON" | jq -r '.[].version' | \
+              xargs -P10 -I{} sh -c \
+                'DOCKER_CONFIG=/dev/null crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
+              > "$EXISTING_FILE" || true
+
+            # Filter out versions that exist
+            if [[ -s "$EXISTING_FILE" ]]; then
+              SKIP_PATTERN=$(paste -sd'|' "$EXISTING_FILE")
+              while IFS= read -r v; do echo "Skipping ${v} — already in GHCR"; done < "$EXISTING_FILE"
+              VERSIONS_JSON=$(echo "$VERSIONS_JSON" | jq -c --arg pat "$SKIP_PATTERN" '[.[] | select(.version | test("^(" + $pat + ")$") | not)]')
+            fi
+            rm -f "$EXISTING_FILE"
+
+            REMAINING=$(echo "$VERSIONS_JSON" | jq length)
+            echo "Pre-filter: ${REMAINING}/${TOTAL} versions need building"
+          fi
+
+          # Platform → runner affinity lookup table
+          # Format: platform|runner_suffix|slug
+          # Runner affinity: ARM32 → ARM64 runner (native compat),
+          # i386 → amd64 (native compat), others → amd64 (QEMU)
+          PLATFORM_MAP="
+          linux/amd64||amd64
+          linux/arm64|-arm|arm64
+          linux/arm/v7|-arm|armv7
+          linux/arm/v6|-arm|armv6
+          linux/riscv64|-riscv|riscv64
+          linux/386||386
+          linux/s390x||s390x
+          linux/ppc64le||ppc64le
+          linux/mips64le||mips64le
+          "
+
+          # Build platform JSON array from DEFAULT_PLATFORMS using the lookup table
+          PLATFORMS="["
+          first=true
+          IFS=',' read -ra REQUESTED <<< "$REQUESTED_PLATFORMS"
+          for req in "${REQUESTED[@]}"; do
+            req="$(echo "$req" | xargs)"
+            [[ -z "$req" ]] && continue
+            matched=false
+            while IFS='|' read -r plat suffix slug; do
+              plat="$(echo "$plat" | xargs)"
+              [[ -z "$plat" ]] && continue
+              if [[ "$req" == "$plat" ]]; then
+                $first || PLATFORMS="${PLATFORMS},"
+                first=false
+                PLATFORMS="${PLATFORMS}
+            {\"platform\":\"${plat}\",\"runner\":\"${RUNNER_BASE}${suffix}\",\"slug\":\"${slug}\"}"
+                matched=true
+                break
+              fi
+            done <<< "$PLATFORM_MAP"
+            if [[ "$matched" == "false" ]]; then
+              echo "::warning::Unknown platform '$req' — skipping (not in affinity table)"
+            fi
+          done
+          PLATFORMS="${PLATFORMS}
+          ]"
+
+          echo "Platforms: $(echo "$PLATFORMS" | jq -c '[ .[].platform ]')"
+
+          # Cross-product: each version × each platform
+          MATRIX=$(echo "$VERSIONS_JSON" | jq -c --argjson platforms "$PLATFORMS" '
+            [.[] as $v | $platforms[] as $p | {
+              version: $v.version,
+              image_tag: $v.image_tag,
+              promote_latest: $v.promote_latest,
+              platform: $p.platform,
+              runner: $p.runner,
+              slug: $p.slug
+            }]
+          ')
+
+          # Deduplicated version list for merge job
+          VERSIONS=$(echo "$VERSIONS_JSON" | jq -c '[.[] | {version, image_tag, promote_latest}]')
+
+          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "versions={\"include\":$VERSIONS}" >> "$GITHUB_OUTPUT"
+
+          COUNT=$(echo "$MATRIX" | jq length)
+          echo "Generated $COUNT build jobs (versions × platforms)"
+
+          # Signal whether there are any builds to run
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "has_builds=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_builds=false" >> "$GITHUB_OUTPUT"
+            echo "No builds needed — all versions already exist in GHCR"
+          fi
+
+  # ── Per-platform build (native or QEMU-emulated) ──
+  build-platform:
+    name: Build ${{ matrix.version }} (${{ matrix.slug }})
+    needs: [prepare-matrix]
+    if: needs.prepare-matrix.outputs.has_builds == 'true'
+    runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: build-${{ matrix.version }}-${{ matrix.slug }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Sanitize inputs (trim whitespace)
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+          trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
+          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "base_image_default=$(trim '${{ inputs.base_image_default }}')" >> "$GITHUB_OUTPUT"
+          echo "haproxy_image=$(trim '${{ inputs.haproxy_image }}')" >> "$GITHUB_OUTPUT"
+          echo "node_image=$(trim '${{ inputs.node_image }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve build profile
+        id: profile
+        uses: ./.github/actions/resolve-build-profile
+        with:
+          build_profile: ${{ inputs.build_profile }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          do_checkout: 'false'
+          setup_qemu: 'true'
+          setup_buildx: 'true'
+          login_dockerhub: 'true'
+          login_ghcr: 'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_actor: ${{ github.actor }}
+          ghcr_token: ${{ github.token }}
+
+      - name: Check existing tags
+        id: check-existing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESULT="$({ FORCE_BUILD="${{ inputs.force_build }}" GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}" VERSION="${{ matrix.version }}" bash .github/scripts/check-existing-tags.sh; } )"
+          echo "$RESULT"
+          SKIP_LINE="$(echo "$RESULT" | awk -F= '/^skip_build=/{print $0}' | tail -n1)"
+          if [[ -z "$SKIP_LINE" ]]; then
+            echo "check-existing-tags did not return skip_build output" >&2
+            exit 1
+          fi
+          echo "$SKIP_LINE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Dockerfile via DockerfileModifier.sh
+        if: steps.check-existing.outputs.skip_build != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Using base image: ${{ steps.sanitize.outputs.base_image_default }}"
+          mkdir -p resources/build_data
+          echo "${{ steps.sanitize.outputs.base_image_default }}" > ./resources/build_data/base-image
+
+          # Resolve HAProxy image with fallback: try GHCR mirror, fall back to Docker Hub
+          HAPROXY_IMG="${{ steps.sanitize.outputs.haproxy_image }}"
+          if ! crane digest "$HAPROXY_IMG" >/dev/null 2>&1; then
+            HAPROXY_FALLBACK="${HAPROXY_IMG##*/}"
+            echo "HAProxy image '$HAPROXY_IMG' not available, falling back to '$HAPROXY_FALLBACK'"
+            HAPROXY_IMG="$HAPROXY_FALLBACK"
+          fi
+          echo "Using HAProxy image: $HAPROXY_IMG"
+          echo "$HAPROXY_IMG" > ./resources/build_data/haproxy-image
+
+          # Resolve Node image with fallback: try GHCR mirror, fall back to Docker Hub
+          NODE_IMG="${{ steps.sanitize.outputs.node_image }}"
+          if ! crane digest "$NODE_IMG" >/dev/null 2>&1; then
+            NODE_FALLBACK="${NODE_IMG##*/}"
+            echo "Node image '$NODE_IMG' not available, falling back to '$NODE_FALLBACK'"
+            NODE_IMG="$NODE_FALLBACK"
+          fi
+          echo "Using Node image: $NODE_IMG"
+          echo "$NODE_IMG" > ./resources/build_data/node-image
+
+          echo "${{ matrix.version }}" > ./resources/build_data/mcp_version
+          date -u +%Y-%m-%dT%H:%M:%SZ > ./resources/build-timestamp.txt
+          bash ./DockerfileModifier.sh
+          test -f ./Dockerfile.pypi-query-mcp-server
+
+      - name: Build and push by digest
+        id: build
+        if: steps.check-existing.outputs.skip_build != 'true'
+        env:
+          BUILDKIT_STEP_LOG_MAX_SIZE: ${{ inputs.buildkit_step_log_max_size }}
+          BUILDKIT_STEP_LOG_MAX_SPEED: ${{ inputs.buildkit_step_log_max_speed }}
+          BUILDKIT_PROGRESS: ${{ inputs.buildkit_progress }}
+          DOCKER_BUILDKIT_INLINE_CACHE: ${{ inputs.docker_buildkit_inline_cache }}
+        uses: ./.github/actions/build-push-retry
+        with:
+          context: .
+          file: ./Dockerfile.pypi-query-mcp-server
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ steps.sanitize.outputs.ghcr_repo }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true,${{ steps.profile.outputs.compression_params }},export-cache-concurrency=${{ inputs.export_cache_concurrency }},export-layers-concurrency=${{ inputs.export_layers_concurrency }}
+          cache-from: type=gha,scope=pypi-query-mcp-server-${{ matrix.version }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=pypi-query-mcp-server-${{ matrix.version }}-${{ matrix.slug }},mode=max,compression=zstd
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            MCP_VERSION=${{ matrix.version }}
+            BASE_IMAGE=${{ steps.sanitize.outputs.base_image_default }}
+          provenance: false
+          sbom: false
+
+      - name: Export digest
+        if: steps.check-existing.outputs.skip_build != 'true'
+        shell: bash
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          echo "Platform ${{ matrix.slug }} digest: $digest"
+          echo "$digest" > "/tmp/digests/${{ matrix.slug }}"
+
+      - name: Upload digest
+        if: steps.check-existing.outputs.skip_build != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.version }}-${{ matrix.slug }}
+          path: /tmp/digests/${{ matrix.slug }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Merge per-platform digests into multi-arch manifest ──
+  merge-manifest:
+    name: Merge ${{ matrix.version }}
+    needs: [prepare-matrix, build-platform]
+    if: ${{ !cancelled() && needs.prepare-matrix.result == 'success' && needs.prepare-matrix.outputs.has_builds == 'true' }}
+    runs-on: ${{ inputs.runner_version || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
+
+    steps:
+      - name: Download all platform digests
+        id: download-digests
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          path: /tmp/digests
+          pattern: digest-${{ matrix.version }}-*
+          merge-multiple: true
+
+      - name: Check if merge is needed
+        id: check-digests
+        shell: bash
+        run: |
+          if [[ ! -d /tmp/digests ]] || [[ -z "$(ls -A /tmp/digests/ 2>/dev/null)" ]]; then
+            echo "No digests found — build was skipped (tags already exist). Skipping merge."
+            echo "has_digests=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_digests=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sanitize inputs
+        if: steps.check-digests.outputs.has_digests == 'true'
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+          trim() { local v="$*"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}" ; printf '%s' "$v"; }
+          echo "ghcr_repo=$(trim '${{ inputs.ghcr_repo }}')" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_repo=$(trim '${{ inputs.dockerhub_repo }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.check-digests.outputs.has_digests == 'true'
+        uses: actions/checkout@v6
+
+      - name: Setup build environment
+        if: steps.check-digests.outputs.has_digests == 'true'
+        uses: ./.github/actions/setup-build-env
+        with:
+          do_checkout: 'false'
+          setup_qemu: 'true'
+          setup_buildx: 'true'
+          login_dockerhub: 'true'
+          login_ghcr: 'true'
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          ghcr_actor: ${{ github.actor }}
+          ghcr_token: ${{ github.token }}
+
+      - name: Create multi-arch manifest and push tags
+        if: steps.check-digests.outputs.has_digests == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/.github/scripts/lib-retry.sh"
+
+          GHCR_REPO="${{ steps.sanitize.outputs.ghcr_repo }}"
+          DH_REPO="${{ steps.sanitize.outputs.dockerhub_repo }}"
+          VERSION="${{ matrix.version }}"
+          IMAGE_TAG="${{ matrix.image_tag }}"
+
+          echo "Merging platform digests for $VERSION"
+
+          ls -la /tmp/digests/
+
+          # Collect all digest sources
+          SOURCES=""
+          for f in /tmp/digests/*; do
+            [[ -f "$f" ]] || continue
+            DIGEST="$(cat "$f")"
+            SLUG="$(basename "$f")"
+            echo "  $SLUG: $DIGEST"
+            SOURCES+="${GHCR_REPO}@${DIGEST} "
+          done
+
+          if [[ -z "$SOURCES" ]]; then
+            echo "No valid digests found — skipping manifest merge"
+            exit 0
+          fi
+
+          echo "Creating multi-arch manifest with tags:"
+          echo "  GHCR: $GHCR_REPO:$VERSION, $GHCR_REPO:$IMAGE_TAG"
+          echo "  DH:   $DH_REPO:$VERSION, $DH_REPO:$IMAGE_TAG"
+
+          # Create manifest list with all tags (GHCR + Docker Hub)
+          run_with_retry "manifest merge ${VERSION}" \
+            docker buildx imagetools create \
+              -t "${GHCR_REPO}:${VERSION}" \
+              -t "${GHCR_REPO}:${IMAGE_TAG}" \
+              -t "${DH_REPO}:${VERSION}" \
+              -t "${DH_REPO}:${IMAGE_TAG}" \
+              $SOURCES
+
+          echo "Multi-arch manifest created successfully"
+
+      - name: Verify Docker Hub parity (fallback sync)
+        if: steps.check-digests.outputs.has_digests == 'true'
+        uses: ./.github/actions/registry-sync
+        with:
+          dockerhub_repo: ${{ steps.sanitize.outputs.dockerhub_repo }}
+          ghcr_repo: ${{ steps.sanitize.outputs.ghcr_repo }}
+          tags: ${{ matrix.image_tag }},${{ matrix.version }}

@@ -1,0 +1,8 @@
+build_logs
+resources/build_data
+resources/build-timestamp.txt
+resources/tag
+Dockerfile.pypi-query-mcp-server
+/.vs
+/Dockerfile.pypi-query-mcp-server
+/Dockerfile
