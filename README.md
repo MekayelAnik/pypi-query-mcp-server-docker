@@ -1,290 +1,597 @@
-# PyPI Query MCP Server — Docker Image
+# PyPI Query MCP Server
 
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/MekayelAnik/pypi-query-mcp-server-docker/monitor-npm-releases.yml?label=build)](https://github.com/MekayelAnik/pypi-query-mcp-server-docker/actions)
-[![Docker Pulls](https://img.shields.io/docker/pulls/mekayelanik/pypi-query-mcp-server.svg)](https://hub.docker.com/r/mekayelanik/pypi-query-mcp-server)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+<p align="center">
+  <a href="https://hub.docker.com/r/mekayelanik/pypi-query-mcp-server"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/mekayelanik/pypi-query-mcp-server?style=flat-square&logo=docker"></a>
+  <a href="https://hub.docker.com/r/mekayelanik/pypi-query-mcp-server"><img alt="Docker Stars" src="https://img.shields.io/docker/stars/mekayelanik/pypi-query-mcp-server?style=flat-square&logo=docker"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/pkgs/container/pypi-query-mcp-server"><img alt="GHCR" src="https://img.shields.io/badge/GHCR-ghcr.io%2Fmekayelanik%2Fpypi-query-mcp-server-blue?style=flat-square&logo=github"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/blob/main/LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square"></a>
+  <a href="https://hub.docker.com/r/mekayelanik/pypi-query-mcp-server"><img alt="Platforms" src="https://img.shields.io/badge/Platforms-amd64%20%7C%20arm64-lightgrey?style=flat-square"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/MekayelAnik/pypi-query-mcp-server-docker?style=flat-square"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/forks"><img alt="GitHub Forks" src="https://img.shields.io/github/forks/MekayelAnik/pypi-query-mcp-server-docker?style=flat-square"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/MekayelAnik/pypi-query-mcp-server-docker?style=flat-square"></a>
+  <a href="https://github.com/MekayelAnik/pypi-query-mcp-server-docker/commits/main"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/MekayelAnik/pypi-query-mcp-server-docker?style=flat-square"></a>
+</p>
 
-A self-contained, multi-architecture (`linux/amd64`, `linux/arm64`) Docker image that runs the upstream [`pypi-query-mcp-server`](https://github.com/loonghao/pypi-query-mcp-server) Model Context Protocol server, wrapped by [`supergateway`](https://github.com/supercorp-ai/supergateway) and fronted by HAProxy with native QUIC / HTTP/3 support, optional TLS, Bearer-token auth, IP allow/block lists, CORS, and rate-limiting.
-
-The upstream MCP server speaks **stdio**. Inside the container, supergateway bridges stdio to a network listener; HAProxy then exposes the chosen transport (SSE, Streamable HTTP, or WebSocket) on the published port. MCP clients (Claude Desktop, Claude Code, Cline, Cursor, Windsurf, etc.) can connect over **stdio** (via `docker exec`), **SSE**, or **Streamable HTTP**.
-
----
-
-## Acknowledgments / Upstream Credit
-
-This Docker image is a packaging and runtime-orchestration layer over the work of the upstream project authors. **All MCP functionality (tools, prompt templates, PyPI queries, dependency resolution, download statistics, etc.) is implemented entirely upstream — not by this repository.**
-
-| Component | Author / Project | License | Link |
-|---|---|---|---|
-| `pypi-query-mcp-server` (the MCP server) | [loonghao](https://github.com/loonghao) | MIT | [GitHub](https://github.com/loonghao/pypi-query-mcp-server) · [PyPI](https://pypi.org/project/pypi-query-mcp-server/) |
-| `supergateway` (stdio ↔ SSE/SHTTP/WS bridge) | [Supercorp](https://github.com/supercorp-ai/supergateway) | see upstream | [GitHub](https://github.com/supercorp-ai/supergateway) |
-| HAProxy (TLS, QUIC, HTTP/3, ACLs) | Willy Tarreau & contributors | GPLv2 | [haproxy.org](https://www.haproxy.org/) |
-| Node.js | OpenJS Foundation | MIT | [nodejs.org](https://nodejs.org/) |
-| Python | Python Software Foundation | PSF | [python.org](https://www.python.org/) |
-| Alpine Linux base | Alpine Linux contributors | mixed | [alpinelinux.org](https://alpinelinux.org/) |
-
-**Please cite, star, and report MCP-server bugs to the [upstream repository](https://github.com/loonghao/pypi-query-mcp-server).** Bugs in the Docker packaging, entrypoint, HAProxy wrapper, or build pipeline belong here.
-
-## Disclaimer (Non-Affiliation)
-
-This Docker image and the build/wrapper code in this repository are **independently produced and maintained by Mohammad Mekayel Anik**. This project is **NOT affiliated with, endorsed by, sponsored by, or otherwise officially connected to**:
-
-- `loonghao` or any contributor of the upstream `pypi-query-mcp-server` project.
-- The Supergateway authors.
-- HAProxy Technologies, the HAProxy project, or Willy Tarreau.
-- The OpenJS Foundation, the Python Software Foundation, or Alpine Linux.
-
-All trademarks, product names, and project names referenced are the property of their respective owners. Reference is for accurate identification only and does not imply any commercial relationship.
+### Multi-Architecture Docker Image for PyPI Package Query, Dependency Analysis & Download Stats
 
 ---
 
-## What's Inside
+## 📋 Table of Contents
 
-- **Base image**: `python:3.14-alpine` (musl-based, ~50MB before app layers)
-- **Python venv** at `/opt/venv` with the upstream MCP server installed from PyPI
-- **Node.js (LTS)** copied from `node:lts-alpine` for the supergateway bridge
-- **HAProxy (LTS, alpine)** copied from `haproxy:lts-alpine` — built with native QUIC/HTTP-3 support
-- **`tini`** as PID 1 for proper signal forwarding
-- Non-root runtime user `node` (UID/GID `1000:1000`, overridable via `PUID`/`PGID`)
-- Auto-detected QUIC/H3 capability with graceful HTTP/2 + HTTP/1.1 fallback
-- Self-signed TLS generation on first run (or bring your own PEM)
-- Healthcheck on `/healthz`
+- [Overview](#overview)
+- [Supported Architectures](#supported-architectures)
+- [Available Tags](#available-tags)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [MCP Client Configuration](#mcp-client-configuration)
+- [Network Configuration](#network-configuration)
+- [Updating](#updating)
+- [Troubleshooting](#troubleshooting)
+- [Additional Resources](#additional-resources)
+- [Support & License](#support--license)
+- [Major Changes](#major-changes)
 
-## Image Tags
+---
 
-```
-mekayelanik/pypi-query-mcp-server:latest                  # latest stable PyPI release
-mekayelanik/pypi-query-mcp-server:<version>               # specific release, e.g. 0.6.5
-mekayelanik/pypi-query-mcp-server:<version>-DDMMYYYY      # pinned to a specific build date
-ghcr.io/mekayelanik/pypi-query-mcp-server:<tag>           # GHCR mirror, identical content
-```
+## 😎 Buy Me a Coffee ☕︎
+**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me inspired.
 
-The `latest` tag tracks the newest stable release published to PyPI. A scheduled GitHub Actions workflow monitors `https://pypi.org/pypi/pypi-query-mcp-server/json` and rebuilds on new releases.
+<p align="center">
+<a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
+<img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
+</a>
+</p>
+
+## Overview
+
+PyPI Query MCP Server queries the Python Package Index — package metadata, version lists, dependency trees, Python compatibility checks, download statistics, and trending packages — through the Model Context Protocol. Built on the upstream [`loonghao/pypi-query-mcp-server`](https://github.com/loonghao/pypi-query-mcp-server) (MIT-licensed) and packaged here under GPL-3.0; this image is independently maintained and is not affiliated with the upstream project.
+
+### Key Features
+
+✨ **Multi-Architecture Support** - Native support for x86-64 and ARM64  
+🚀 **Multiple Transport Protocols** - HTTP, SSE, and WebSocket support  
+🔒 **Secure by Design** - Alpine-based with minimal attack surface  
+⚡ **High Performance** - ZSTD compression for faster deployments  
+🎯 **Production Ready** - Stable releases with comprehensive testing  
+🔧 **Easy Configuration** - Simple environment variable setup
+
+---
+
+## Supported Architectures
+
+| Architecture | Tag Prefix | Status |
+|:-------------|:-----------|:------:|
+| **x86-64** | `amd64-<version>` | ✅ Stable |
+| **ARM64** | `arm64v8-<version>` | ✅ Stable |
+
+> 💡 Multi-arch images automatically select the correct architecture for your system.
+
+---
+
+## Available Tags
+
+| Tag | Stability | Description | Use Case |
+|:----|:---------:|:------------|:---------|
+| `stable` | ⭐⭐⭐ | Most stable release | **Recommended for production** |
+| `latest` | ⭐⭐⭐ | Latest stable release | Stay current with stable features |
+| `0.4.2` | ⭐⭐⭐ | Specific version | Version pinning for consistency |
+| `beta` | ⚠️ | Beta releases | **Testing only** |
+
+### System Requirements
+
+- **Docker Engine:** 23.0+
+- **RAM:** Minimum 512MB
+- **CPU:** Single core sufficient
+
+> 🔒 **CRITICAL:** Do NOT expose this container directly to the internet without proper security measures (reverse proxy, SSL/TLS, authentication, firewall rules).
+
+---
 
 ## Quick Start
 
-### docker run (Streamable HTTP, the default)
-
-```bash
-docker run -d \
-  --name pypi-query-mcp-server \
-  -p 8055:8055 \
-  -e PROTOCOL=SHTTP \
-  -e PORT=8055 \
-  --restart unless-stopped \
-  mekayelanik/pypi-query-mcp-server:latest
-```
-
-Then point an MCP client at `http://localhost:8055/mcp`.
-
-### docker compose
+### Docker Compose (Recommended)
 
 ```yaml
 services:
   pypi-query-mcp-server:
-    image: mekayelanik/pypi-query-mcp-server:latest
+    image: mekayelanik/pypi-query-mcp-server:stable
     container_name: pypi-query-mcp-server
-    environment:
-      - PORT=8055
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - PROTOCOL=SHTTP
-      - ENABLE_HTTPS=false
-      - HTTP_VERSION_MODE=auto
-      # - API_KEY=replace-with-strong-secret
-      # - CORS=*
+    restart: unless-stopped
     ports:
       - "8055:8055"
     volumes:
-      - pypi-query-mcp-cache:/home/node/.cache
-    restart: unless-stopped
+      - pypi-query-mcp-cache:/home/node/.cache   # Persist cache for future embedding support
+    environment:
+      - PORT=8055
+      - INTERNAL_PORT=38056
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Dhaka
+      - NODE_ENV=production
+      - PROTOCOL=HTTP
+      - ENABLE_HTTPS=false
+      - HTTP_VERSION_MODE=auto
+      # Optional: require Bearer token auth at HAProxy layer
+      # - API_KEY=replace-with-strong-secret
+    hostname: pypi-query-mcp-server
+    domainname: local
 
 volumes:
   pypi-query-mcp-cache:
     driver: local
 ```
 
+**Deploy:**
 ```bash
 docker compose up -d
+docker compose logs -f pypi-query-mcp-server
 ```
 
-## Supported Transports
+### Docker CLI
 
-| `PROTOCOL` value | Path on `PORT` | Notes |
-|---|---|---|
-| `SHTTP` (default) | `POST /mcp` | Streamable HTTP — recommended for browser/long-running clients |
-| `SSE` | `GET /sse` | Server-Sent Events — compatible with most MCP clients |
-| `WS` | `GET /message` | WebSocket — useful for low-latency bidirectional streams |
-| stdio (no `PROTOCOL`) | n/a | Run via `docker exec -i ... pypi-query-mcp-server` and pipe stdio directly |
+```bash
+docker volume create pypi-query-mcp-cache
+docker run -d \
+  --name=pypi-query-mcp-server \
+  --restart=unless-stopped \
+  -p 8055:8055 \
+  -v pypi-query-mcp-cache:/home/node/.cache \
+  -e PORT=8055 \
+  -e INTERNAL_PORT=38056 \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Asia/Dhaka \
+  -e NODE_ENV=production \
+  -e PROTOCOL=HTTP \
+  -e ENABLE_HTTPS=false \
+  -e HTTP_VERSION_MODE=auto \
+  mekayelanik/pypi-query-mcp-server:stable
+```
 
-## Environment Variables
+### Access Endpoints
+
+| Protocol | Endpoint | Use Case |
+|:---------|:---------|:---------|
+| **HTTP** | `http://host-ip:8055/mcp` | Best compatibility (recommended) |
+| **SSE** | `http://host-ip:8055/sse` | Real-time streaming |
+| **WebSocket** | `ws://host-ip:8055/message` | Bidirectional communication |
+
+When HTTPS is enabled (`ENABLE_HTTPS=true`), use TLS endpoints:
+
+| Protocol | Endpoint |
+|:---------|:---------|
+| **SHTTP** | `https://host-ip:8055/mcp` |
+| **SSE** | `https://host-ip:8055/sse` |
+| **WebSocket** | `wss://host-ip:8055/message` |
+
+> ⚠️ **Security Warning:** The container now defaults to HTTP (`ENABLE_HTTPS=false`) for easier local setup. Use `ENABLE_HTTPS=true` for production, public networks, or any untrusted environment.
+>
+> ⏱️ **ARM Devices:** Allow 30-60 seconds for initialization before accessing endpoints.
+
+---
+
+## Configuration
+
+### Environment Variables
 
 | Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8055` | External HAProxy listen port |
-| `PUID` | `1000` | UID for the runtime user |
-| `PGID` | `1000` | GID for the runtime user |
-| `TZ` | `UTC` | Timezone (e.g. `Asia/Dhaka`) |
-| `PROTOCOL` | `SHTTP` | One of `SHTTP`, `SSE`, `WS` |
-| `ENABLE_HTTPS` | `false` | Set `true` to terminate TLS at HAProxy |
-| `HTTP_VERSION_MODE` | `auto` | `auto`, `h1`, `h2`, `h3` — pin or auto-detect HTTP version |
-| `API_KEY` | _(unset)_ | If set, requires `Authorization: Bearer <key>` on every request (5–256 chars, no whitespace) |
-| `CORS` | _(unset)_ | Comma-separated origins or `*` |
-| `IP_ALLOWLIST` | _(unset)_ | Comma-separated CIDRs/IPs |
-| `IP_BLOCKLIST` | _(unset)_ | Comma-separated CIDRs/IPs |
-| `RATE_LIMIT` | _(unset)_ | Requests per period, e.g. `100/1m` |
-| `TLS_DAYS` | `365` | Validity (days) for self-signed cert |
-| `TLS_CN` | `localhost` | Common Name for self-signed cert |
-| `TLS_MIN_VERSION` | `TLSv1.3` | One of `TLSv1.2`, `TLSv1.3` |
-| `TLS_CERT` / `TLS_KEY` | _(unset)_ | Bring-your-own PEM (mounted into container) |
-| Upstream env vars | _(see below)_ | Passed through to the MCP server |
+|:---------|:-------:|:------------|
+| `PORT` | `8055` | Internal server port |
+| `INTERNAL_PORT` | `38056` | Internal MCP server port used by supergateway |
+| `PUID` | `1000` | User ID for file permissions |
+| `PGID` | `1000` | Group ID for file permissions |
+| `TZ` | `Asia/Dhaka` | Container timezone ([TZ database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
+| `NODE_ENV` | `production` | Node.js environment |
+| `PROTOCOL` | `SHTTP` | Default transport protocol |
+| `API_KEY` | *(empty)* | Enables Bearer token auth (`Authorization: Bearer <API_KEY>`) |
+| `CORS` | *(empty)* | Comma-separated CORS origins, supports `*` |
+| `ENABLE_HTTPS` | `false` | Enables TLS termination in HAProxy |
+| `TLS_CERT_PATH` | `/etc/haproxy/certs/server.crt` | TLS cert path |
+| `TLS_KEY_PATH` | `/etc/haproxy/certs/server.key` | TLS private key path |
+| `TLS_PEM_PATH` | `/etc/haproxy/certs/server.pem` | Combined PEM file used by HAProxy |
+| `TLS_CN` | `localhost` | CN for auto-generated certificate |
+| `TLS_SAN` | `DNS:<TLS_CN>` | SAN for auto-generated certificate |
+| `TLS_DAYS` | `365` | Auto-generated cert validity period |
+| `TLS_MIN_VERSION` | `TLSv1.3` | Minimum TLS protocol (`TLSv1.2` or `TLSv1.3`) |
+| `HTTP_VERSION_MODE` | `auto` | `auto`, `all`, `h1`, `h2`, `h3`, `h1+h2` |
+| `RATE_LIMIT` | `0` | Max requests per `RATE_LIMIT_PERIOD` per IP (`0` = disabled) |
+| `RATE_LIMIT_PERIOD` | `10s` | Sliding window for rate limiting (e.g., `10s`, `1m`, `1h`) |
+| `MAX_CONNECTIONS_PER_IP` | `0` | Max concurrent connections per IP (`0` = disabled) |
+| `IP_ALLOWLIST` | *(empty)* | Comma-separated IPs/CIDRs to allow (all others blocked) |
+| `IP_BLOCKLIST` | *(empty)* | Comma-separated IPs/CIDRs to block |
+| `DEBUG_MODE` | *(empty)* | Enables debug hold mode when set truthy |
 
-### Upstream MCP Server Configuration
+### HTTPS and HTTP Version Notes
 
-The upstream `pypi-query-mcp-server` reads its own configuration from environment variables (see [upstream README](https://github.com/loonghao/pypi-query-mcp-server#environment-variables) for full list). All such variables are passed through unchanged. Common ones:
+- If `ENABLE_HTTPS=true` and cert files are missing, the container auto-generates a self-signed certificate.
+- If `TLS_CERT_PATH` and `TLS_KEY_PATH` exist, they are merged into `TLS_PEM_PATH` and used directly.
+- `HTTP_VERSION_MODE=h3` (or `auto`) enables HTTP/3 only when HAProxy build includes QUIC; otherwise it safely falls back.
 
-- `PYPI_INDEX_URL` — primary PyPI index (default `https://pypi.org/simple/`)
-- `PYPI_EXTRA_INDEX_URLS` — comma-separated mirrors
-- `PYPI_INDEX_USERNAME`, `PYPI_INDEX_PASSWORD` — for private indexes
-- `PYPI_CACHE_TTL` — cache duration in seconds
+### API Key Authentication Notes
+
+- Set `API_KEY` to enforce authentication at reverse proxy level.
+- Expected header format: `Authorization: Bearer <API_KEY>`.
+- Localhost health checks remain accessible for liveness/readiness.
+
+### Rate Limiting and IP Access Control
+
+- **Rate limiting:** Set `RATE_LIMIT=100` to allow 100 requests per `RATE_LIMIT_PERIOD` (default `10s`) per IP. Exceeding the limit returns HTTP 429 with a `Retry-After` header.
+- **Connection limiting:** Set `MAX_CONNECTIONS_PER_IP=50` to cap concurrent connections per IP. Exceeding returns HTTP 429.
+- **IP blocklist:** Set `IP_BLOCKLIST=192.0.2.0/24,198.51.100.5` to block specific IPs/CIDRs. Blocked IPs receive HTTP 403.
+- **IP allowlist:** Set `IP_ALLOWLIST=10.0.0.0/8,192.168.1.0/24` to allow only listed IPs/CIDRs. All others receive HTTP 403. Localhost is always allowed.
+- All features default to disabled. Combine as needed — blocklist is checked before allowlist.
+
+### User & Group IDs
+
+Find your IDs and set them to avoid permission issues:
+
+```bash
+id username
+# uid=1000(user) gid=1000(group)
+```
+
+### Timezone Examples
+
+```yaml
+- TZ=Asia/Dhaka        # Bangladesh
+- TZ=America/New_York  # US Eastern
+- TZ=Europe/London     # UK
+- TZ=UTC               # Universal Time
+```
+
+---
 
 ## MCP Client Configuration
 
-### Claude Desktop / Cursor / Windsurf (Streamable HTTP)
+### Transport Support
+
+| Client | HTTP | SSE | WebSocket | Recommended |
+|:-------|:----:|:---:|:---------:|:------------|
+| **VS Code (Cline/Roo-Cline)** | ✅ | ✅ | ❌ | HTTP |
+| **Claude Desktop** | ✅ | ✅ | ⚠️* | HTTP |
+| **Claude CLI** | ✅ | ✅ | ⚠️* | HTTP |
+| **Codex CLI** | ✅ | ✅ | ⚠️* | HTTP |
+| **Codeium (Windsurf)** | ✅ | ✅ | ⚠️* | HTTP |
+| **Cursor** | ✅ | ✅ | ⚠️* | HTTP |
+
+> ⚠️ *WebSocket is experimental ([Issue #1288](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1288))
+
+---
+
+### VS Code (Cline/Roo-Cline)
+
+Configure in `.vscode/settings.json`:
 
 ```json
 {
-  "mcpServers": {
-    "pypi-query": {
-      "url": "http://localhost:8055/mcp",
-      "transport": "streamableHttp"
+  "mcp.servers": {
+    "pypi-query-mcp-server": {
+      "url": "http://host-ip:8055/mcp",
+      "transport": "http"
     }
   }
 }
 ```
 
-### Claude Desktop (SSE)
+---
+
+### Claude Desktop App/Claude Code
+
+**Configuration:**
+### **With API_KEY**
+```
+claude mcp add-json github '{"type":"http","url":"http://localhost:8055/mcp","headers":{"Authorization":"Bearer <YOUR_API_KEY>"}}'
+```
+### **Without API_KEY**
+```
+claude mcp add-json github '{"type":"http","url":"http://localhost:8055/mcp"}'
+```
+
+---
+
+### Codex CLI
+
+Configure in `~/.codex/config.json`:
 
 ```json
 {
   "mcpServers": {
-    "pypi-query": {
-      "url": "http://localhost:8055/sse",
-      "transport": "sse"
+    "pypi-query-mcp-server": {
+      "transport": "http",
+      "url": "http://host-ip:8055/mcp"
     }
   }
 }
 ```
 
-### Claude Desktop (stdio via docker)
+---
+
+### Codeium (Windsurf)
+
+Configure in `.codeium/mcp_settings.json`:
 
 ```json
 {
   "mcpServers": {
-    "pypi-query": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "mekayelanik/pypi-query-mcp-server:latest",
-        "/opt/venv/bin/pypi-query-mcp-server"
-      ]
+    "pypi-query-mcp-server": {
+      "transport": "http",
+      "url": "http://host-ip:8055/mcp"
     }
   }
 }
 ```
 
-### With API Key
+---
 
-If you set `API_KEY` on the container, clients must add an `Authorization: Bearer <key>` header. For Claude Desktop, set the header in the client's HTTP transport config (varies by client version).
+### Cursor
 
-## Available MCP Tools
+Configure in `~/.cursor/mcp.json`:
 
-The upstream MCP server exposes 24 tools and prompt templates (subject to change in newer versions). Highlights:
+```json
+{
+  "mcpServers": {
+    "pypi-query-mcp-server": {
+      "transport": "http",
+      "url": "http://host-ip:8055/mcp"
+    }
+  }
+}
+```
 
-- **`get_package_info`** — comprehensive PyPI package info
-- **`get_package_versions`** — list all versions of a package
-- **`get_package_dependencies`** — analyze direct dependencies
-- **`check_package_python_compatibility`** — Python version compatibility check
-- **`resolve_dependencies`** — recursive dependency resolution
-- **`download_package`** — download package + dependencies
-- **`get_download_statistics`** — download counts (BigQuery-backed)
-- **`get_download_trends`** — 180-day trend series
-- **`get_top_downloaded_packages`** — popularity ranking
-- Prompt templates: `analyze_package_quality`, `compare_packages`, `suggest_alternatives`, `resolve_dependency_conflicts`, `plan_version_upgrade`, `audit_security_risks`, etc.
+---
 
-See the [upstream README](https://github.com/loonghao/pypi-query-mcp-server#available-mcp-tools) for the authoritative list and detailed semantics.
+### Testing Configuration
 
-## Healthcheck
-
-The container ships a Docker `HEALTHCHECK` that probes `http(s)://127.0.0.1:${PORT}/healthz`. The `/healthz` endpoint is bypassed from auth/rate-limit so monitors can call it freely.
+Verify with [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
-docker inspect --format='{{.State.Health.Status}}' pypi-query-mcp-server
+npm install -g @modelcontextprotocol/inspector
+mcp-inspector http://host-ip:8055/mcp
 ```
 
-## Building Locally
+---
+
+## Network Configuration
+
+### Comparison
+
+| Network Mode | Complexity | Performance | Use Case |
+|:-------------|:----------:|:-----------:|:---------|
+| **Bridge** | ⭐ Easy | ⭐⭐⭐ Good | Default, isolated |
+| **Host** | ⭐⭐ Moderate | ⭐⭐⭐⭐ Excellent | Direct host access |
+| **MACVLAN** | ⭐⭐⭐ Advanced | ⭐⭐⭐⭐ Excellent | Dedicated IP |
+
+---
+
+### Bridge Network (Default)
+
+```yaml
+services:
+  pypi-query-mcp-server:
+    image: mekayelanik/pypi-query-mcp-server:stable
+    ports:
+      - "8055:8055"
+```
+
+**Benefits:** Container isolation, easy setup, works everywhere
+**Access:** `http://localhost:8055/mcp`
+
+---
+
+### Host Network (Linux Only)
+
+```yaml
+services:
+  pypi-query-mcp-server:
+    image: mekayelanik/pypi-query-mcp-server:stable
+    network_mode: host
+```
+
+**Benefits:** Maximum performance, no NAT overhead, no port mapping needed
+**Considerations:** Linux only, shares host network namespace
+**Access:** `http://localhost:8055/mcp`
+
+---
+
+### MACVLAN Network (Advanced)
+
+```yaml
+services:
+  pypi-query-mcp-server:
+    image: mekayelanik/pypi-query-mcp-server:stable
+    mac_address: "AB:BC:CD:DE:EF:01"
+    networks:
+      macvlan-net:
+        ipv4_address: 192.168.1.100
+
+networks:
+  macvlan-net:
+    driver: macvlan
+    driver_opts:
+      parent: eth0
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24
+          gateway: 192.168.1.1
+```
+
+**Benefits:** Dedicated IP, direct LAN access
+**Considerations:** Linux only, requires additional setup
+**Access:** `http://192.168.1.100:8055/mcp`
+
+---
+
+## Updating
+
+### Docker Compose
 
 ```bash
-git clone https://github.com/MekayelAnik/pypi-query-mcp-server-docker.git
-cd pypi-query-mcp-server-docker
-
-mkdir -p resources/build_data
-echo 'python:3.14-alpine'   > resources/build_data/base-image
-echo 'haproxy:lts-alpine'   > resources/build_data/haproxy-image
-echo 'node:lts-alpine'      > resources/build_data/node-image
-echo '0.6.5'                > resources/build_data/mcp_version
-date -u +%Y-%m-%dT%H:%M:%SZ > resources/build-timestamp.txt
-
-bash DockerfileModifier.sh
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -f Dockerfile.pypi-query-mcp-server \
-  -t pypi-query-mcp-server:dev .
+docker compose pull
+docker compose up -d
+docker image prune -f
 ```
 
-## CI / CD
+### Docker CLI
 
-The repository ships a complete CI/CD setup mirroring its sibling MCP-image repos:
+```bash
+docker pull mekayelanik/pypi-query-mcp-server:stable
+docker stop pypi-query-mcp-server && docker rm pypi-query-mcp-server
+# Run your original docker run command
+docker image prune -f
+```
 
-- `.github/workflows/monitor-npm-releases.yml` — daily PyPI poll + on-demand `workflow_dispatch`
-- `.github/workflows/reusable-build-versions.yml` — matrix build across versions × platforms with skip-if-already-pushed and crane-based digest checks
-- `.github/workflows/reusable-promote-latest.yml` — atomically promote a specific version to `:latest` across both registries
-- `.github/workflows/update-dockerhub-readme.yml` — sync this README to Docker Hub
-- 7 composite actions under `.github/actions/` (registry login, sync, retry build/push, profile resolution, etc.)
-- 9 shell scripts under `.github/scripts/` for tag-existence checks, registry sync, runtime smoke tests
+### One-Time Update with Watchtower
 
-### Required Repository Variables / Secrets
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  containrrr/watchtower \
+  --run-once \
+  pypi-query-mcp-server
+```
 
-| Setting | Type | Purpose |
-|---|---|---|
-| `DOCKERHUB_USERNAME` | secret | Docker Hub login |
-| `DOCKERHUB_TOKEN` | secret | Docker Hub access token (write) |
-| `DOCKERHUB_REPO` | var (optional) | Override `mekayelanik/pypi-query-mcp-server` |
-| `GHCR_REPO` | var (optional) | Override `ghcr.io/<owner>/pypi-query-mcp-server` |
-| `BASE_IMAGE_DEFAULT` | var (optional) | Override `python:3.14-alpine` |
-| `HAPROXY_IMAGE` | var (optional) | Override `haproxy:lts-alpine` |
-| `NODE_IMAGE` | var (optional) | Override `node:lts-alpine` |
-| `DEFAULT_PLATFORMS` | var (optional) | Override `linux/amd64,linux/arm64` |
-| `TZ` | var (optional) | Default `Asia/Dhaka` |
+---
 
-`GITHUB_TOKEN` is auto-provided by Actions for GHCR pushes.
+## Troubleshooting
 
-## License
+### Pre-Flight Checklist
 
-This Docker image and its build/wrapper code are licensed under the **GNU General Public License v3.0 or later** (GPL-3.0-or-later). See [LICENSE](LICENSE) for full text and ATTRIBUTIONS.
+- ✅ Docker Engine 23.0+
+- ✅ Port 8055 available
+- ✅ Sufficient startup time (ARM devices)
+- ✅ Latest stable image
+- ✅ Correct configuration
 
-The GPL-3.0 covers ONLY the wrapper code authored in this repository. The upstream MCP server, supergateway, HAProxy, Node.js, Python, and Alpine Linux components retain their own licenses (see [Acknowledgments](#acknowledgments--upstream-credit)).
+### Common Issues
 
-> **Note for image consumers:** Mere _use_ of the resulting image (running it as a container) does not trigger GPLv3 obligations. Redistribution of modified versions of the wrapper code does.
+#### Container Won't Start
 
-## Issues / Contributing
+```bash
+# Check Docker version
+docker --version
 
-- **MCP server bugs / feature requests** → [upstream issue tracker](https://github.com/loonghao/pypi-query-mcp-server/issues)
-- **Docker image / packaging / CI bugs** → [this repo's issues](https://github.com/MekayelAnik/pypi-query-mcp-server-docker/issues)
+# Verify port availability
+sudo netstat -tulpn | grep 8055
 
-PRs welcome. Run shellcheck + `bash -n` on any modified shell script before submitting; the preflight CI job will reject otherwise.
+# Check logs
+docker logs pypi-query-mcp-server
+```
 
-## Maintainer
+#### Permission Errors
 
-Mohammad Mekayel Anik — `mekayel.anik@gmail.com`
+```bash
+# Get your IDs
+id $USER
+
+# Update configuration with correct PUID/PGID
+# Fix volume permissions if needed
+sudo chown -R 1000:1000 /path/to/volume
+```
+
+#### Client Cannot Connect
+
+```bash
+# Test connectivity
+curl http://localhost:8055/mcp
+curl http://host-ip:8055/mcp
+curl -k https://localhost:8055/mcp
+curl -k https://host-ip:8055/mcp
+
+# Check firewall
+sudo ufw status
+
+# Verify container
+docker inspect pypi-query-mcp-server | grep IPAddress
+```
+
+#### Slow ARM Performance
+
+- Wait 30-60 seconds after start
+- Monitor: `docker logs -f pypi-query-mcp-server`
+- Check resources: `docker stats pypi-query-mcp-server`
+- Use faster storage (SSD vs SD card)
+
+### Debug Information
+
+When reporting issues, include:
+
+```bash
+# System info
+docker --version && uname -a
+
+# Container logs
+docker logs pypi-query-mcp-server --tail 200 > logs.txt
+
+# Container config
+docker inspect pypi-query-mcp-server > inspect.json
+```
+
+---
+
+## Additional Resources
+
+### Documentation
+- 📚 [pypi-query-mcp-server (upstream)](https://github.com/loonghao/pypi-query-mcp-server)
+- 📦 [PyPI Package](https://pypi.org/project/pypi-query-mcp-server/)
+- 🔧 [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+
+### Docker Resources
+- 🐳 [Docker Compose Best Practices](https://docs.docker.com/compose/production/)
+- 🌐 [Docker Networking](https://docs.docker.com/network/)
+- 🛡️ [Docker Security](https://docs.docker.com/engine/security/)
+
+### Monitoring
+- 📊 [Diun - Update Notifier](https://crazymax.dev/diun/)
+- ⚡ [Watchtower](https://containrrr.dev/watchtower/)
+
+---
+
+## 😎 Buy Me a Coffee ☕︎
+**Your support encourages me to keep creating/supporting my open-source projects.** If you found value in this project, you can buy me a coffee to keep me inspired.
+
+<p align="center">
+  <a href="https://07mekayel07.gumroad.com/coffee" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60">
+  </a>
+</p>
+
+## Support & License
+
+### Getting Help
+
+**Docker Image Issues:**
+- GitHub: [pypi-query-mcp-server-docker/issues](https://github.com/MekayelAnik/pypi-query-mcp-server-docker/issues)
+
+**PyPI Query MCP Server Issues:**
+- GitHub: [PyPI Query MCP Server/PyPI Query MCP Server/issues](https://github.com/loonghao/pypi-query-mcp-server/issues)
+- Website: [github.com/PyPI Query MCP Server/PyPI Query MCP Server](https://github.com/loonghao/pypi-query-mcp-server/)
+
+### Contributing
+
+We welcome contributions:
+1. Report bugs via GitHub Issues
+2. Suggest features
+3. Improve documentation
+4. Test beta releases
+
+### License
+
+GPL License. See [LICENSE](https://raw.githubusercontent.com/MekayelAnik/pypi-query-mcp-server-docker/refs/heads/main/LICENSE) for details.
+
+PyPI Query MCP Server server has its own license - see [Main repo](https://github.com/loonghao/pypi-query-mcp-server).
+
+---
+
+### Major Changes
+
+<ul>
+  <li><strong>Initial Release:</strong> Full CI/CD pipeline with HAProxy, HTTPS/TLS, QUIC/HTTP3, API key auth</li>
+</ul>
+
+<p></p>
+
+<div align="center">
+
+[⬆ Back to Top](#pypi-query-mcp-server-server)
+
+</div>
