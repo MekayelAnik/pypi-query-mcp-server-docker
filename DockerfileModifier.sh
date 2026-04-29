@@ -47,7 +47,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/banner.sh /usr/local/bi
 # Alpine runtime + build helpers (shadow gives groupadd/useradd; tini for PID 1)
 RUN apk add --no-cache \\
         bash ca-certificates tzdata su-exec dos2unix openssl curl wget \\
-        netcat-openbsd iproute2 git libatomic shadow tini \\
+        netcat-openbsd iproute2 git libatomic libstdc++ shadow tini \\
     && dos2unix /usr/local/bin/*.sh \\
     && apk del dos2unix \\
     && ln -sf /sbin/su-exec /usr/local/bin/gosu \\
