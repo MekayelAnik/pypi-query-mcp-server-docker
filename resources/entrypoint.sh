@@ -511,6 +511,9 @@ generate_haproxy_config() {
         api_key_check="    # API Key authentication enabled (/healthz fully bypassed for liveness/readiness probes)
     acl auth_header_present var(txn.auth_header) -m found
 
+    # Require RFC 6750 'Bearer ' scheme prefix (case-insensitive), at least one whitespace before token
+    acl auth_has_bearer_prefix var(txn.auth_header) -i -m reg ^[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+
+
     # Extract token: strip 'Bearer ' prefix (case-insensitive) into txn.api_token
     http-request set-var(txn.api_token) var(txn.auth_header),regsub(^[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+,)
 
@@ -519,7 +522,8 @@ generate_haproxy_config() {
 
     # Deny requests without valid authentication (/healthz is exempt from auth regardless of source IP)
     http-request deny deny_status 401 content-type \"application/json\" string '{\"error\":\"Unauthorized\",\"message\":\"Valid API key required\"}' if !is_health_check !auth_header_present
-    http-request deny deny_status 403 content-type \"application/json\" string '{\"error\":\"Forbidden\",\"message\":\"Invalid API key\"}' if !is_health_check auth_header_present !auth_valid"
+    http-request deny deny_status 401 content-type \"application/json\" string '{\"error\":\"Unauthorized\",\"message\":\"Bearer scheme required\"}' if !is_health_check auth_header_present !auth_has_bearer_prefix
+    http-request deny deny_status 403 content-type \"application/json\" string '{\"error\":\"Forbidden\",\"message\":\"Invalid API key\"}' if !is_health_check auth_header_present auth_has_bearer_prefix !auth_valid"
     else
         api_key_check="    # API Key authentication disabled - all requests allowed"
     fi
