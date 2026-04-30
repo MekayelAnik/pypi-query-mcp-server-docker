@@ -586,7 +586,7 @@ start_haproxy() {
 }
 
 start_mcp_server() {
-    local mcp_server_cmd="/opt/venv/bin/pypi-query-mcp-server"
+    local mcp_server_cmd="pypi-query-mcp-server"
 
     case "${PROTOCOL^^}" in
         SHTTP|STREAMABLEHTTP)

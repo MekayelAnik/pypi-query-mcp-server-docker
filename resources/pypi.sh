@@ -14,8 +14,8 @@ ARCH=$(uname -m)
 echo "Detected build architecture: $ARCH"
 
 # Upgrade pip and install dependency array
-/opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel
-/opt/venv/bin/pip install --no-cache-dir "${DEPENDENCIES[@]}"
+pip install --no-cache-dir --break-system-packages --upgrade pip setuptools wheel
+pip install --no-cache-dir --break-system-packages "${DEPENDENCIES[@]}"
 
 # Install specific mcp_version of the app
 if [ -f /usr/local/bin/build_data/mcp_version ]; then
@@ -25,10 +25,10 @@ else
     exit 1
 fi
 
-/opt/venv/bin/pip install --no-cache-dir --no-deps "pypi-query-mcp-server==${MCP_VERSION}"
+pip install --no-cache-dir --break-system-packages --no-deps "pypi-query-mcp-server==${MCP_VERSION}"
 
-find /opt/venv -type d -name "__pycache__" -exec rm -rf {} +
-find /opt/venv -name "*.pyc" -delete
+find /usr/lib/python* -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find /usr/lib/python* -name "*.pyc" -delete 2>/dev/null || true
 
-/opt/venv/bin/python -c "import pypi_query_mcp; print('PyPI Query MCP Server imported successfully')"
-/opt/venv/bin/pypi-query-mcp-server --help >/dev/null 2>&1 || echo "Note: pypi-query-mcp-server --help did not return cleanly (may be expected for stdio MCP)"
+python -c "import pypi_query_mcp; print('PyPI Query MCP Server imported successfully')"
+pypi-query-mcp-server --help >/dev/null 2>&1 || echo "Note: pypi-query-mcp-server --help did not return cleanly (may be expected for stdio MCP)"
