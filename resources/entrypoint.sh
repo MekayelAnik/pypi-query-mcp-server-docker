@@ -260,19 +260,27 @@ handle_first_run() {
         fi
     fi
 
-    if [ "$(id -u node)" -ne "$PUID" ]; then
-        if usermod -o -u "$PUID" node 2>/dev/null; then
-            uid_gid_changed=1
-        else
-            PUID="$(id -u node)"
-        fi
+    # Python alpine image doesn't have a 'node' user, so create one
+    if ! id -u node >/dev/null 2>&1; then
+        addgroup -g "$PGID" node 2>/dev/null || true
+        adduser -D -u "$PUID" -G node -s /bin/bash node 2>/dev/null || true
     fi
 
-    if [ "$(id -g node)" -ne "$PGID" ]; then
-        if groupmod -o -g "$PGID" node 2>/dev/null; then
-            uid_gid_changed=1
-        else
-            PGID="$(id -g node)"
+    if id -u node >/dev/null 2>&1; then
+        if [ "$(id -u node)" -ne "$PUID" ]; then
+            if usermod -o -u "$PUID" node 2>/dev/null; then
+                uid_gid_changed=1
+            else
+                PUID="$(id -u node)"
+            fi
+        fi
+
+        if [ "$(id -g node)" -ne "$PGID" ]; then
+            if groupmod -o -g "$PGID" node 2>/dev/null; then
+                uid_gid_changed=1
+            else
+                PGID="$(id -g node)"
+            fi
         fi
     fi
 
@@ -611,7 +619,7 @@ start_mcp_server() {
     echo "Launching PyPI Query MCP Server with protocol: ${PROTOCOL_DISPLAY}"
 
     if [ "$(id -u)" -eq 0 ]; then
-        gosu node "${CMD_ARGS[@]}" &
+        su-exec node "${CMD_ARGS[@]}" &
     else
         "${CMD_ARGS[@]}" &
     fi
