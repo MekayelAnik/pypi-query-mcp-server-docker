@@ -75,7 +75,6 @@ env:
   EXCLUDE_VERSIONS: ${{ vars.EXCLUDE_VERSIONS || '' }}
   BASE_IMAGE_DEFAULT: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || 'python:3.14-alpine' }}
   HAPROXY_IMAGE: ${{ vars.HAPROXY_IMAGE || 'haproxy:lts-alpine' }}
-  NODE_IMAGE: ${{ vars.NODE_IMAGE || 'node:lts-alpine' }}
   EXPORT_CACHE_CONCURRENCY: '4'
   EXPORT_LAYERS_CONCURRENCY: '4'
   BUILDKIT_STEP_LOG_MAX_SIZE: '50000000'
@@ -236,7 +235,6 @@ jobs:
       force_build: ${{ needs.fetch-releases.outputs.normalized_force_build }}
       base_image_default: ${{ github.event.inputs.base_image || vars.BASE_IMAGE_DEFAULT || 'python:3.14-alpine' }}
       haproxy_image: ${{ vars.HAPROXY_IMAGE || 'haproxy:lts-alpine' }}
-      node_image: ${{ vars.NODE_IMAGE || 'node:lts-alpine' }}
       ghcr_repo: ${{ vars.GHCR_REPO || format('ghcr.io/{0}/pypi-query-mcp-server', github.repository_owner) }}
       dockerhub_repo: ${{ vars.DOCKERHUB_REPO || 'mekayelanik/pypi-query-mcp-server' }}
       default_platforms: ${{ vars.DEFAULT_PLATFORMS || 'linux/amd64,linux/arm64' }}

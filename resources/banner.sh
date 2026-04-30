@@ -13,7 +13,7 @@ ASH_GRAY='\033[38;5;250m'
 NC='\033[0m'
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" ; pwd -P)
 # Constants
-BUILD_TIMESTAMP=$(cat /usr/local/bin/build-timestamp.txt)
+BUILD_TIMESTAMP=$(cat /usr/local/bin/build-timestamp.txt 2>/dev/null || echo "")
 
 # Function to print separator line
 print_separator() {
