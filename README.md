@@ -74,7 +74,7 @@ PyPI Query MCP Server queries the Python Package Index — package metadata, ver
 |:----|:---------:|:------------|:---------|
 | `stable` | ⭐⭐⭐ | Most stable release | **Recommended for production** |
 | `latest` | ⭐⭐⭐ | Latest stable release | Stay current with stable features |
-| `0.4.2` | ⭐⭐⭐ | Specific version | Version pinning for consistency |
+| `0.6.5` | ⭐⭐⭐ | Specific version | Version pinning for consistency |
 | `beta` | ⚠️ | Beta releases | **Testing only** |
 
 ### System Requirements
