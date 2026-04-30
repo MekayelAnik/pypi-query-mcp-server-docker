@@ -69,7 +69,7 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \\
 RUN groupadd -g 1000 node \\
     && useradd -u 1000 -g node -s /bin/bash -m node \\
     && mkdir -p /app /opt/venv \\
-    && chown -R node:node /app /opt/venv /home/node
+    && chown -R node:node /app /opt/venv /home/node /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
 
 USER node
 
