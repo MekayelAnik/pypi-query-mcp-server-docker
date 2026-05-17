@@ -110,8 +110,13 @@ jobs:
           RUNNER_BASE="${{ inputs.runner_version || 'ubuntu-24.04' }}"
           REQUESTED_PLATFORMS="${{ inputs.default_platforms }}"
 
-          # Pre-filter: skip versions already in GHCR (unless force_build)
-          # Parallel crane digest checks (~1-2s for 40+ versions vs ~9s serial)
+          # Pre-filter: skip versions already in GHCR (unless force_build).
+          # Parallel crane digest checks (~1-2s for 40+ versions vs ~9s serial).
+          # Uses the authenticated crane session set up by imjasonh/setup-crane
+          # earlier in this job — anonymous reads on GHCR are unreliable even
+          # for public-repo packages, and a missed pre-filter cascades EVERY
+          # version into the matrix where each runner spins up only to
+          # early-exit via check-existing-tags.sh (wasted runner minutes).
           if [[ "$FORCE_BUILD" != "true" ]]; then
             FILTERED="[]"
             TOTAL=$(echo "$VERSIONS_JSON" | jq length)
@@ -120,7 +125,7 @@ jobs:
             # Check all versions in parallel (up to 10 concurrent)
             echo "$VERSIONS_JSON" | jq -r '.[].version' | \
               xargs -P10 -I{} sh -c \
-                'DOCKER_CONFIG=/dev/null crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
+                'crane digest "'"${GHCR_REPO}"':{}" >/dev/null 2>&1 && echo "{}"' \
               > "$EXISTING_FILE" || true
 
             # Filter out versions that exist
