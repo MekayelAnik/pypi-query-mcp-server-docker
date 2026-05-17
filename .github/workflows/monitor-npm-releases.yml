@@ -330,6 +330,14 @@ jobs:
             EXISTING_SINCE="$(jq -r '.latest_version_since // ""' state.json)"
           fi
 
+          # Early-exit: version unchanged and state already initialized. Avoids
+          # churn from rewriting updated_at on every auto-check (the only field
+          # that would otherwise differ from HEAD when nothing has changed).
+          if [[ -n "$EXISTING_VERSION" && "$LATEST" == "$EXISTING_VERSION" && -n "$EXISTING_SINCE" ]]; then
+            echo "Version unchanged ($LATEST) and state already initialized — skipping commit"
+            exit 0
+          fi
+
           # Determine latest_version_since
           if [[ "$LATEST" != "$EXISTING_VERSION" || -z "$EXISTING_SINCE" ]]; then
             SINCE="$NOW"
@@ -347,7 +355,8 @@ jobs:
 
           git add state.json
 
-          # Check if staged content differs from HEAD (handles both new and modified files)
+          # Defensive: even if the early-exit above misses an edge case, never
+          # commit a state.json whose only delta is updated_at.
           if git diff --cached --quiet 2>/dev/null; then
             echo "State unchanged — skipping commit"
             exit 0
