@@ -277,93 +277,16 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  update-readme-version:
-    name: Update README version
-    needs: [fetch-releases, build-versions, promote-latest]
-    # Fire only when a NEW version of latest was actually built + promoted in
-    # this run. `contains(versions_json, latest_version)` ensures latest was in
-    # the build matrix; `build-versions.result == 'success'` ensures it didn't
-    # fail. Avoids docs/state churn on cron ticks with no new release.
-    if: |
-      needs.fetch-releases.outputs.latest_version != '' &&
-      needs.build-versions.result == 'success' &&
-      needs.promote-latest.result == 'success' &&
-      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
-    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v6
-        with:
-          ref: main
-          token: ${{ github.token }}
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Update version in README
-        shell: bash
-        run: |
-          set -euo pipefail
-          LATEST="${{ needs.fetch-releases.outputs.latest_version }}"
-          echo "Updating README to version $LATEST"
-
-          # Update the Available Tags table row with specific version
-          # Matches: | `X.Y.Z` | <anything> | Specific version
-          sed -i -E "s/\| \`[0-9]+\.[0-9]+\.[0-9]+\` \|(.+)\| Specific version/| \`${LATEST}\` |\1| Specific version/" README.md
-          if git diff --quiet README.md; then
-            echo "README already up to date"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "docs: update README version to ${LATEST}"
-
-          MAX_ATTEMPTS=5
-          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-            if git push origin "HEAD:main"; then
-              echo "README pushed on attempt ${attempt}."
-              exit 0
-            fi
-            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
-              break
-            fi
-            echo "Push rejected on attempt ${attempt}; rebasing on origin/main..."
-            if ! git pull --rebase --autostash --strategy-option=theirs origin main; then
-              git rebase --abort >/dev/null 2>&1 || true
-              echo "::error::Rebase failed on attempt ${attempt}"
-              exit 1
-            fi
-            sleep "$(( (RANDOM % 4) + 2 ))"
-          done
-          echo "::error::Failed to push README after ${MAX_ATTEMPTS} attempts"
-          exit 1
-
-  update-dockerhub-description:
-    name: Update Docker Hub description
-    needs: [fetch-releases, build-versions, promote-latest, update-readme-version]
-    if: |
-      needs.build-versions.result == 'success' &&
-      needs.promote-latest.result == 'success' &&
-      needs.update-readme-version.result == 'success' &&
-      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
-    uses: ./.github/workflows/update-dockerhub-readme.yml
-    secrets: inherit
-
   update-state:
     name: Update pipeline state
-    # Runs LAST. Fires only when a new latest version was built, promoted,
-    # README updated, and Docker Hub description synced — i.e., the entire
-    # release pipeline succeeded end-to-end. No-ops on every other run.
-    needs: [fetch-releases, build-versions, promote-latest, update-readme-version, update-dockerhub-description]
+    # Runs immediately after promote-latest. Fires only when a NEW latest
+    # version was actually built + promoted in this run; cron ticks where
+    # nothing shipped skip entirely.
+    needs: [fetch-releases, build-versions, promote-latest]
     if: |
       needs.fetch-releases.outputs.latest_version != '' &&
       needs.build-versions.result == 'success' &&
       needs.promote-latest.result == 'success' &&
-      needs.update-readme-version.result == 'success' &&
-      needs.update-dockerhub-description.result == 'success' &&
       contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
     steps:
@@ -443,3 +366,76 @@ jobs:
 
           git commit -m "state: update pypi_latest_version to ${LATEST}"
           git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:pipeline-state
+
+  update-readme-version:
+    name: Update README version
+    needs: [fetch-releases, build-versions, promote-latest, update-state]
+    if: |
+      needs.fetch-releases.outputs.latest_version != '' &&
+      needs.build-versions.result == 'success' &&
+      needs.promote-latest.result == 'success' &&
+      needs.update-state.result == 'success' &&
+      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
+    runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ github.token }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Update version in README
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST="${{ needs.fetch-releases.outputs.latest_version }}"
+          echo "Updating README to version $LATEST"
+
+          # Update the Available Tags table row with specific version
+          # Matches: | `X.Y.Z` | <anything> | Specific version
+          sed -i -E "s/\| \`[0-9]+\.[0-9]+\.[0-9]+\` \|(.+)\| Specific version/| \`${LATEST}\` |\1| Specific version/" README.md
+          if git diff --quiet README.md; then
+            echo "README already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update README version to ${LATEST}"
+
+          MAX_ATTEMPTS=5
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            if git push origin "HEAD:main"; then
+              echo "README pushed on attempt ${attempt}."
+              exit 0
+            fi
+            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
+              break
+            fi
+            echo "Push rejected on attempt ${attempt}; rebasing on origin/main..."
+            if ! git pull --rebase --autostash --strategy-option=theirs origin main; then
+              git rebase --abort >/dev/null 2>&1 || true
+              echo "::error::Rebase failed on attempt ${attempt}"
+              exit 1
+            fi
+            sleep "$(( (RANDOM % 4) + 2 ))"
+          done
+          echo "::error::Failed to push README after ${MAX_ATTEMPTS} attempts"
+          exit 1
+
+  update-dockerhub-description:
+    name: Update Docker Hub description
+    needs: [fetch-releases, build-versions, promote-latest, update-state, update-readme-version]
+    if: |
+      needs.build-versions.result == 'success' &&
+      needs.promote-latest.result == 'success' &&
+      needs.update-state.result == 'success' &&
+      needs.update-readme-version.result == 'success' &&
+      contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
+    uses: ./.github/workflows/update-dockerhub-readme.yml
+    secrets: inherit
