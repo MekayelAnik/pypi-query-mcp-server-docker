@@ -4,13 +4,28 @@ services:
     container_name: pypi-query-mcp-server
     environment:
       - PORT=8055
+      - INTERNAL_PORT=38056
       - PUID=1000
       - PGID=1000
       - TZ=UTC
       - NODE_ENV=production
       - PROTOCOL=SHTTP
+      # ENABLE_HTTPS=false is plaintext over the wire. Safe ONLY for
+      # loopback / trusted internal networks. Set to "true" for any
+      # public, multi-host, or untrusted deployment — HAProxy auto-
+      # generates a self-signed cert if none is mounted under
+      # /etc/haproxy/certs/.
       - ENABLE_HTTPS=false
       - HTTP_VERSION_MODE=auto
+      # mcp-proxy session model. Stateful by default — one stdio child shared
+      # across all sessions (multiplexed via JSON-RPC ids). Set to true only
+      # if full per-request isolation is required (memory-hostile).
+      - MCP_PROXY_STATELESS=false
+      # Cap virtual memory of the pypi-query stdio child (MiB; 0 disables)
+      - PQMS_MAX_MEM_MB=1024
+      # HAProxy concurrency caps (0 disables)
+      - HAPROXY_FRONTEND_MAXCONN=64
+      - HAPROXY_SERVER_MAXCONN=16
       # Optional: require Bearer token auth at HAProxy layer
       # - API_KEY=replace-with-strong-secret
       # Optional: CORS origins (comma-separated, or * for all)
