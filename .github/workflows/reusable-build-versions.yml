@@ -80,6 +80,10 @@ on:
       DOCKERHUB_TOKEN:
         description: Docker Hub token
         required: true
+    outputs:
+      has_builds:
+        description: 'true if at least one version needs building after pre-filter, false if all versions already exist in GHCR.'
+        value: ${{ jobs.prepare-matrix.outputs.has_builds }}
 
 permissions:
   contents: read

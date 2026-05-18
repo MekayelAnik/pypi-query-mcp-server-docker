@@ -252,6 +252,12 @@ jobs:
   promote-latest:
     name: Promote latest tag
     needs: [quick-check, fetch-releases, build-versions]
+    # Fire only when:
+    #   - explicit promote action requested by user/dispatch, OR
+    #   - build-versions actually produced new images this run
+    #     (has_builds=true) AND a valid latest_version exists.
+    # Pure cron auto-check ticks where every version already exists in GHCR
+    # produce has_builds=false and skip this job (and everything downstream).
     if: |
       always() &&
       (needs.fetch-releases.outputs.latest_version != '' || needs.fetch-releases.outputs.normalized_action == 'force-promote-latest') &&
@@ -260,9 +266,7 @@ jobs:
         needs.fetch-releases.outputs.normalized_action == 'force-promote-latest' ||
         needs.fetch-releases.outputs.normalized_action == 'promote-stable' ||
         needs.fetch-releases.outputs.normalized_action == 'force-promote-stable' ||
-        (needs.build-versions.result == 'success' && needs.fetch-releases.outputs.normalized_auto_promote == 'true') ||
-        (needs.build-versions.result == 'success' && contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)) ||
-        needs.fetch-releases.outputs.normalized_action == 'auto-check'
+        (needs.build-versions.result == 'success' && needs.build-versions.outputs.has_builds == 'true')
       )
     uses: ./.github/workflows/reusable-promote-latest.yml
     with:
@@ -281,11 +285,12 @@ jobs:
     name: Update pipeline state
     # Runs immediately after promote-latest. Fires only when a NEW latest
     # version was actually built + promoted in this run; cron ticks where
-    # nothing shipped skip entirely.
+    # nothing shipped skip entirely (has_builds=false from pre-filter).
     needs: [fetch-releases, build-versions, promote-latest]
     if: |
       needs.fetch-releases.outputs.latest_version != '' &&
       needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
       needs.promote-latest.result == 'success' &&
       contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
     runs-on: ${{ vars.ACTION_RUNNER_VERSION || 'ubuntu-latest' }}
@@ -373,6 +378,7 @@ jobs:
     if: |
       needs.fetch-releases.outputs.latest_version != '' &&
       needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
       needs.promote-latest.result == 'success' &&
       needs.update-state.result == 'success' &&
       contains(needs.fetch-releases.outputs.versions_json, needs.fetch-releases.outputs.latest_version)
@@ -433,6 +439,7 @@ jobs:
     needs: [fetch-releases, build-versions, promote-latest, update-state, update-readme-version]
     if: |
       needs.build-versions.result == 'success' &&
+      needs.build-versions.outputs.has_builds == 'true' &&
       needs.promote-latest.result == 'success' &&
       needs.update-state.result == 'success' &&
       needs.update-readme-version.result == 'success' &&
